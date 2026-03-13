@@ -1,2 +1,10 @@
+
+# Agente
 .agent/
-.env
+
+# Logs y temporales
+*.log
+.pytest_cache/
+
+.security-audit.agent
+.security-hardening.agent

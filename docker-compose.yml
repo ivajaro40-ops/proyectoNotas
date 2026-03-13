@@ -9,15 +9,22 @@ services:
       - "${PORT:-5000}:5000"
     volumes:
       - notes_data:/app/data
+    tmpfs:
+      - /tmp
+    read_only: true
+    cap_drop:
+      - ALL
     environment:
-      - JWT_SECRET=${JWT_SECRET:-super-secret-change-me}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be defined in .env file with at least 32 characters}
       - PORT=${PORT:-5000}
       - DATABASE_URL=/app/data/notes.db
       - FLASK_DEBUG=${FLASK_DEBUG:-0}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5000}
+      - RECAPTCHA_SITE_KEY=${RECAPTCHA_SITE_KEY:-6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI}
+      - RECAPTCHA_SECRET_KEY=${RECAPTCHA_SECRET_KEY:-6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/auth/logout', data=b'')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -38,19 +38,31 @@
 
     let isLoginMode = true;
     let deleteNoteId = null;
+    let recaptchaSiteKey = null;
+    let loginWidgetId = null;
+    let registerWidgetId = null;
 
     // ===== Utility Functions =====
 
     function getToken() {
-        return localStorage.getItem("token");
+        return localStorage.getItem("access_token");
     }
 
     function setToken(token) {
-        localStorage.setItem("token", token);
+        localStorage.setItem("access_token", token);
+    }
+
+    function getRefreshToken() {
+        return localStorage.getItem("refresh_token");
+    }
+
+    function setRefreshToken(token) {
+        localStorage.setItem("refresh_token", token);
     }
 
     function clearToken() {
-        localStorage.removeItem("token");
+        localStorage.removeItem("access_token");
+        localStorage.removeItem("refresh_token");
         localStorage.removeItem("user_email");
     }
 
@@ -103,6 +115,12 @@
             return null;
         }
 
+        if (response.status === 403 || response.status === 404) {
+             // Handle Forbidden / Anti-IDOR 404
+             const data = await response.json().catch(() => ({}));
+             return { error: data.error || "No tienes permiso para acceder a este recurso.", _status: response.status };
+        }
+
         if (response.status === 204) {
             return { _status: 204 };
         }
@@ -148,6 +166,15 @@
                 '¿Ya tienes cuenta? <a href="#" id="auth-toggle" class="text-decoration-none fw-semibold">Inicia sesión</a>';
         }
 
+        if (window.grecaptcha && loginWidgetId !== null && registerWidgetId !== null) {
+            try {
+                grecaptcha.reset(loginWidgetId);
+                grecaptcha.reset(registerWidgetId);
+            } catch (e) {
+                console.error("Error resetting reCAPTCHA:", e);
+            }
+        }
+
         // Re-attach event listener since we replaced the element
         document.getElementById("auth-toggle").addEventListener("click", (e) => {
             e.preventDefault();
@@ -161,20 +188,32 @@
         e.preventDefault();
         const email = document.getElementById("login-email").value.trim();
         const password = document.getElementById("login-password").value;
+        const recaptcha_token = e.target.querySelector('[name="g-recaptcha-response"]')?.value || "";
+
+        if (!recaptcha_token) {
+            showAlert(authAlert, "Por favor, completa el botón 'No soy un robot'.", "danger");
+            return;
+        }
 
         const data = await apiRequest("/api/auth/login", {
             method: "POST",
-            body: JSON.stringify({ email, password }),
+            body: JSON.stringify({ email, password, recaptcha_token }),
         });
 
         if (!data) return;
 
         if (data._status !== 200) {
             showAlert(authAlert, data.error || "Error al iniciar sesión.", "danger");
+            if (window.grecaptcha && loginWidgetId !== null) {
+                grecaptcha.reset(loginWidgetId);
+            }
             return;
         }
 
-        setToken(data.token);
+        setToken(data.access_token);
+        if (data.refresh_token) {
+            setRefreshToken(data.refresh_token);
+        }
         setUserEmail(email);
         loginForm.reset();
         showNotesView();
@@ -185,16 +224,25 @@
         const email = document.getElementById("register-email").value.trim();
         const password = document.getElementById("register-password").value;
         const password_confirm = document.getElementById("register-password-confirm").value;
+        const recaptcha_token = e.target.querySelector('[name="g-recaptcha-response"]')?.value || "";
+
+        if (!recaptcha_token) {
+            showAlert(authAlert, "Por favor, completa el botón 'No soy un robot'.", "danger");
+            return;
+        }
 
         const data = await apiRequest("/api/auth/register", {
             method: "POST",
-            body: JSON.stringify({ email, password, password_confirm }),
+            body: JSON.stringify({ email, password, password_confirm, recaptcha_token }),
         });
 
         if (!data) return;
 
         if (data._status !== 201) {
             showAlert(authAlert, data.error || "Error al registrar.", "danger");
+            if (window.grecaptcha && registerWidgetId !== null) {
+                grecaptcha.reset(registerWidgetId);
+            }
             return;
         }
 
@@ -204,7 +252,11 @@
     });
 
     btnLogout.addEventListener("click", async () => {
-        await apiRequest("/api/auth/logout", { method: "POST" });
+        const refresh_token = getRefreshToken();
+        await apiRequest("/api/auth/logout", { 
+            method: "POST",
+            body: JSON.stringify({ refresh_token })
+        });
         clearToken();
         showAuthView();
     });
@@ -248,12 +300,10 @@
                             <i class="bi bi-clock me-1"></i>${formatDate(note.created_at)}
                         </span>
                         <div class="note-actions">
-                            <button class="note-action-btn edit" title="Editar"
-                                    onclick="event.stopPropagation(); window.app.editNote(${note.id})">
+                            <button class="note-action-btn edit" title="Editar">
                                 <i class="bi bi-pencil"></i>
                             </button>
-                            <button class="note-action-btn delete" title="Eliminar"
-                                    onclick="event.stopPropagation(); window.app.deleteNote(${note.id})">
+                            <button class="note-action-btn delete" title="Eliminar">
                                 <i class="bi bi-trash"></i>
                             </button>
                         </div>
@@ -262,6 +312,16 @@
 
             col.querySelector(".note-card").addEventListener("click", () => {
                 window.app.viewNote(note.id);
+            });
+
+            col.querySelector(".edit").addEventListener("click", (e) => {
+                e.stopPropagation();
+                window.app.editNote(note.id);
+            });
+
+            col.querySelector(".delete").addEventListener("click", (e) => {
+                e.stopPropagation();
+                window.app.deleteNote(note.id);
             });
 
             notesContainer.appendChild(col);
@@ -373,9 +433,46 @@
     });
 
     // ===== Init =====
-    if (getToken()) {
-        showNotesView();
-    } else {
-        showAuthView();
+    async function init() {
+        // Fetch public config
+        try {
+            const config = await apiRequest("/api/config");
+            if (config && config.recaptcha_site_key) {
+                recaptchaSiteKey = config.recaptcha_site_key;
+                renderRecaptcha();
+            }
+        } catch (e) {
+            console.error("Failed to load config:", e);
+        }
+
+        if (getToken()) {
+            showNotesView();
+        } else {
+            showAuthView();
+        }
     }
+
+    function renderRecaptcha() {
+        if (typeof grecaptcha === 'undefined' || typeof grecaptcha.render !== 'function' || !recaptchaSiteKey) {
+            setTimeout(renderRecaptcha, 500);
+            return;
+        }
+
+        try {
+            if (loginWidgetId === null) {
+                loginWidgetId = grecaptcha.render("recaptcha-login", {
+                    'sitekey': recaptchaSiteKey
+                });
+            }
+            if (registerWidgetId === null) {
+                registerWidgetId = grecaptcha.render("recaptcha-register", {
+                    'sitekey': recaptchaSiteKey
+                });
+            }
+        } catch (e) {
+            console.error("reCAPTCHA render error:", e);
+        }
+    }
+
+    init();
 })();

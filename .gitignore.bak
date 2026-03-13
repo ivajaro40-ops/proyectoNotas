@@ -1,0 +1,25 @@
+# Entorno virtual
+.venv/
+venv/
+ENV/
+
+# Variables de entorno
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Base de datos local
+backend/data/*.db
+*.db
+
+# Agente
+.agent/
+
+# Logs y temporales
+*.log
+.pytest_cache/
+
+.security-audit.agent

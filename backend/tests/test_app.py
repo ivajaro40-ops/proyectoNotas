@@ -10,8 +10,9 @@ class TestAuthRegister:
     def test_register_success(self, client):
         resp = client.post("/api/auth/register", json={
             "email": "new@example.com",
-            "password": "securepass",
-            "password_confirm": "securepass",
+            "password": "TestPassword123!",
+            "password_confirm": "TestPassword123!",
+            "recaptcha_token": "test-token"
         })
         assert resp.status_code == 201
         data = resp.get_json()
@@ -23,13 +24,15 @@ class TestAuthRegister:
     def test_register_duplicate_email(self, client):
         client.post("/api/auth/register", json={
             "email": "dup@example.com",
-            "password": "securepass",
-            "password_confirm": "securepass",
+            "password": "TestPassword123!",
+            "password_confirm": "TestPassword123!",
+            "recaptcha_token": "test-token"
         })
         resp = client.post("/api/auth/register", json={
             "email": "dup@example.com",
-            "password": "securepass",
-            "password_confirm": "securepass",
+            "password": "TestPassword123!",
+            "password_confirm": "TestPassword123!",
+            "recaptcha_token": "test-token"
         })
         assert resp.status_code == 409
         assert "error" in resp.get_json()
@@ -37,8 +40,9 @@ class TestAuthRegister:
     def test_register_password_mismatch(self, client):
         resp = client.post("/api/auth/register", json={
             "email": "user@example.com",
-            "password": "securepass",
-            "password_confirm": "different",
+            "password": "TestPassword123!",
+            "password_confirm": "different123!",
+            "recaptcha_token": "test-token"
         })
         assert resp.status_code == 400
         assert "coinciden" in resp.get_json()["error"]
@@ -46,17 +50,19 @@ class TestAuthRegister:
     def test_register_short_password(self, client):
         resp = client.post("/api/auth/register", json={
             "email": "user@example.com",
-            "password": "short",
-            "password_confirm": "short",
+            "password": "123", # Too short
+            "password_confirm": "123",
+            "recaptcha_token": "test-token"
         })
         assert resp.status_code == 400
-        assert "8 caracteres" in resp.get_json()["error"]
+        assert "caracteres" in resp.get_json()["error"]
 
     def test_register_invalid_email(self, client):
         resp = client.post("/api/auth/register", json={
             "email": "not-an-email",
-            "password": "securepass",
-            "password_confirm": "securepass",
+            "password": "TestPassword123!",
+            "password_confirm": "TestPassword123!",
+            "recaptcha_token": "test-token"
         })
         assert resp.status_code == 400
         assert "email" in resp.get_json()["error"].lower()
@@ -72,25 +78,29 @@ class TestAuthLogin:
     def test_login_success(self, client):
         client.post("/api/auth/register", json={
             "email": "login@example.com",
-            "password": "securepass",
-            "password_confirm": "securepass",
+            "password": "TestPassword123!",
+            "password_confirm": "TestPassword123!",
+            "recaptcha_token": "test-token"
         })
         resp = client.post("/api/auth/login", json={
             "email": "login@example.com",
-            "password": "securepass",
+            "password": "TestPassword123!",
+            "recaptcha_token": "test-token"
         })
         assert resp.status_code == 200
-        assert "token" in resp.get_json()
+        assert "access_token" in resp.get_json()
 
     def test_login_wrong_password(self, client):
         client.post("/api/auth/register", json={
             "email": "login2@example.com",
-            "password": "securepass",
-            "password_confirm": "securepass",
+            "password": "TestPassword123!",
+            "password_confirm": "TestPassword123!",
+            "recaptcha_token": "test-token"
         })
         resp = client.post("/api/auth/login", json={
             "email": "login2@example.com",
-            "password": "wrongpassword",
+            "password": "WrongPassword123!",
+            "recaptcha_token": "test-token"
         })
         assert resp.status_code == 401
         assert "error" in resp.get_json()
@@ -98,7 +108,8 @@ class TestAuthLogin:
     def test_login_nonexistent_user(self, client):
         resp = client.post("/api/auth/login", json={
             "email": "noone@example.com",
-            "password": "whatever",
+            "password": "TestPassword123!",
+            "recaptcha_token": "test-token"
         })
         assert resp.status_code == 401
 
@@ -178,7 +189,8 @@ class TestNotesAuthorization:
 
         # User 2 tries to read user 1's note
         resp = client.get(f"/api/notes/{note_id}", headers=auth_headers_user2)
-        assert resp.status_code == 403
+        # Anti-IDOR policy: Return 404 instead of 403 to not confirm existence
+        assert resp.status_code == 404
 
     def test_user_cannot_edit_other_notes(self, client, auth_headers, auth_headers_user2):
         create_resp = client.post("/api/notes", headers=auth_headers, json={
@@ -189,7 +201,7 @@ class TestNotesAuthorization:
         resp = client.put(f"/api/notes/{note_id}", headers=auth_headers_user2, json={
             "titulo": "Hackeado", "contenido": "Intento de edición",
         })
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     def test_user_cannot_delete_other_notes(self, client, auth_headers, auth_headers_user2):
         create_resp = client.post("/api/notes", headers=auth_headers, json={
@@ -198,7 +210,7 @@ class TestNotesAuthorization:
         note_id = create_resp.get_json()["id"]
 
         resp = client.delete(f"/api/notes/{note_id}", headers=auth_headers_user2)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     def test_list_only_own_notes(self, client, auth_headers, auth_headers_user2):
         client.post("/api/notes", headers=auth_headers, json={

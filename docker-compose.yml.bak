@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  web:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-5000}:5000"
+    volumes:
+      - notes_data:/app/data
+    environment:
+      - JWT_SECRET=${JWT_SECRET:-super-secret-change-me}
+      - PORT=${PORT:-5000}
+      - DATABASE_URL=/app/data/notes.db
+      - FLASK_DEBUG=${FLASK_DEBUG:-0}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5000}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/auth/logout', data=b'')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  notes_data:

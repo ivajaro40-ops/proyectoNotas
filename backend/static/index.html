@@ -13,6 +13,9 @@
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
+    <!-- ReCAPTCHA v2 -->
+    <script src="https://www.google.com/recaptcha/api.js?render=explicit" async defer></script>
+
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -63,6 +66,8 @@
                                placeholder="••••••••" required autocomplete="current-password">
                     </div>
                 </div>
+                <!-- reCAPTCHA widget -->
+                <div id="recaptcha-login" class="mb-3 d-flex justify-content-center"></div>
                 <button type="submit" class="btn btn-primary-custom w-100 mb-3" id="btn-login">
                     <i class="bi bi-box-arrow-in-right me-2"></i>Entrar
                 </button>
@@ -83,7 +88,7 @@
                     <div class="input-group">
                         <span class="input-group-text"><i class="bi bi-lock"></i></span>
                         <input type="password" class="form-control" id="register-password"
-                               placeholder="Mínimo 8 caracteres" required minlength="8" autocomplete="new-password">
+                               placeholder="Mínimo 12 caracteres" required minlength="12" autocomplete="new-password">
                     </div>
                 </div>
                 <div class="mb-4">
@@ -91,9 +96,11 @@
                     <div class="input-group">
                         <span class="input-group-text"><i class="bi bi-lock-fill"></i></span>
                         <input type="password" class="form-control" id="register-password-confirm"
-                               placeholder="Repite la contraseña" required minlength="8" autocomplete="new-password">
+                               placeholder="Repite la contraseña" required minlength="12" autocomplete="new-password">
                     </div>
                 </div>
+                <!-- reCAPTCHA widget -->
+                <div id="recaptcha-register" class="mb-3 d-flex justify-content-center"></div>
                 <button type="submit" class="btn btn-primary-custom w-100 mb-3" id="btn-register">
                     <i class="bi bi-person-plus me-2"></i>Crear cuenta
                 </button>
@@ -203,6 +210,6 @@
 
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=2"></script>
 </body>
 </html>

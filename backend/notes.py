@@ -3,7 +3,8 @@ from flask import Blueprint, request, jsonify, g
 import bleach
 from config import Config
 from database import get_db
-from middleware import token_required
+from middleware import require_auth, require_note_ownership
+from crypto_utils import encrypt_content, decrypt_content
 
 notes_bp = Blueprint("notes", __name__, url_prefix="/api/notes")
 
@@ -21,15 +22,17 @@ def note_to_dict(row, snippet=False):
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+    # Decrypt content before returning
+    decrypted_content = decrypt_content(row["contenido"], g.current_user_id)
     if snippet:
-        d["snippet"] = (row["contenido"] or "")[:150]
+        d["snippet"] = (decrypted_content or "")[:150]
     else:
-        d["contenido"] = row["contenido"]
+        d["contenido"] = decrypted_content
     return d
 
 
 @notes_bp.route("", methods=["GET"])
-@token_required
+@require_auth
 def list_notes():
     """List all notes belonging to the authenticated user."""
     db = get_db()
@@ -42,7 +45,7 @@ def list_notes():
 
 
 @notes_bp.route("", methods=["POST"])
-@token_required
+@require_auth
 def create_note():
     """Create a new note for the authenticated user."""
     data = request.get_json(silent=True)
@@ -68,10 +71,11 @@ def create_note():
 
     db = get_db()
     now = datetime.utcnow().isoformat()
+    encrypted_content = encrypt_content(contenido, g.current_user_id)
     cursor = db.execute(
         "INSERT INTO notas (user_id, titulo, contenido, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?)",
-        (g.current_user_id, titulo, contenido, now, now),
+        (g.current_user_id, titulo, encrypted_content, now, now),
     )
     db.commit()
 
@@ -84,7 +88,8 @@ def create_note():
 
 
 @notes_bp.route("/<int:note_id>", methods=["GET"])
-@token_required
+@require_auth
+@require_note_ownership
 def get_note(note_id):
     """Retrieve a single note if it belongs to the authenticated user."""
     db = get_db()
@@ -94,29 +99,15 @@ def get_note(note_id):
         (note_id,),
     ).fetchone()
 
-    if not note:
-        return jsonify({"error": "Nota no encontrada."}), 404
-
-    if note["user_id"] != g.current_user_id:
-        return jsonify({"error": "No tienes permiso para ver esta nota."}), 403
-
     return jsonify(note_to_dict(note)), 200
 
 
 @notes_bp.route("/<int:note_id>", methods=["PUT"])
-@token_required
+@require_auth
+@require_note_ownership
 def update_note(note_id):
     """Update a note if it belongs to the authenticated user."""
     db = get_db()
-    note = db.execute(
-        "SELECT id, user_id FROM notas WHERE id = ?", (note_id,)
-    ).fetchone()
-
-    if not note:
-        return jsonify({"error": "Nota no encontrada."}), 404
-
-    if note["user_id"] != g.current_user_id:
-        return jsonify({"error": "No tienes permiso para editar esta nota."}), 403
 
     data = request.get_json(silent=True)
     if not data:
@@ -140,9 +131,10 @@ def update_note(note_id):
         return jsonify({"error": " ".join(errors)}), 400
 
     now = datetime.utcnow().isoformat()
+    encrypted_content = encrypt_content(contenido, g.current_user_id)
     db.execute(
         "UPDATE notas SET titulo = ?, contenido = ?, updated_at = ? WHERE id = ?",
-        (titulo, contenido, now, note_id),
+        (titulo, encrypted_content, now, note_id),
     )
     db.commit()
 
@@ -155,20 +147,11 @@ def update_note(note_id):
 
 
 @notes_bp.route("/<int:note_id>", methods=["DELETE"])
-@token_required
+@require_auth
+@require_note_ownership
 def delete_note(note_id):
     """Delete a note if it belongs to the authenticated user."""
     db = get_db()
-    note = db.execute(
-        "SELECT id, user_id FROM notas WHERE id = ?", (note_id,)
-    ).fetchone()
-
-    if not note:
-        return jsonify({"error": "Nota no encontrada."}), 404
-
-    if note["user_id"] != g.current_user_id:
-        return jsonify({"error": "No tienes permiso para borrar esta nota."}), 403
-
     db.execute("DELETE FROM notas WHERE id = ?", (note_id,))
     db.commit()
 

@@ -1,0 +1,1155 @@
+# 🛡️ Agente de Blindaje Máximo de Seguridad — Gestor de Notas Privadas
+# Archivo: security-hardening.agent
+# Uso: Claude Code — claude --agent security-hardening.agent
+
+---
+
+## ROL Y MISIÓN
+
+Eres un agente de seguridad ofensiva y defensiva (Red Team + Blue Team) con experiencia en
+hardening de aplicaciones web críticas. Tu misión es llevar la aplicación "Gestor de Notas
+Privadas" al nivel de seguridad más alto posible sin sacrificar funcionalidad.
+
+Piensa como un atacante para identificar vectores, y como un arquitecto de seguridad para
+eliminarlos permanentemente. Cada mejora que implementes debe ser verificable y medible.
+
+Regla de oro: Si no puedes demostrar que una medida funciona con un test, no la implementes.
+
+---
+
+## ÍNDICE DE MÓDULOS DE BLINDAJE
+
+  MÓDULO 1  — Fortaleza de Autenticación
+  MÓDULO 2  — Blindaje JWT de Nivel Militar
+  MÓDULO 3  — Autorización de Confianza Cero (Zero Trust)
+  MÓDULO 4  — Defensa Anti-Inyección Total
+  MÓDULO 5  — Cabeceras HTTP Fortress
+  MÓDULO 6  — Rate Limiting y Anti-Fuerza Bruta
+  MÓDULO 7  — Cifrado en Reposo y en Tránsito
+  MÓDULO 8  — Endurecimiento de Contenedores Docker
+  MÓDULO 9  — WAF (Web Application Firewall) Ligero
+  MÓDULO 10 — Logging de Seguridad y Detección de Intrusiones
+  MÓDULO 11 — Gestión Segura de Secretos
+  MÓDULO 12 — Superficie de Ataque Mínima
+  MÓDULO 13 — Tests de Penetración Automatizados
+  MÓDULO 14 — Pipeline de Seguridad CI/CD
+
+---
+
+## PASO 0 — PREPARACIÓN
+
+Antes de implementar cualquier módulo:
+
+1. Crea un backup completo del proyecto:
+   ```bash
+   cp -r . ../gestor-notas-backup-$(date +%Y%m%d_%H%M%S)
+   ```
+2. Verifica que el entorno virtual está activo y los tests pasan en verde:
+   ```bash
+   cd backend && pytest --tb=short -q
+   ```
+3. Registra el estado inicial de seguridad ejecutando:
+   ```bash
+   pip install pip-audit safety bandit
+   pip-audit
+   bandit -r . -ll -ii --exclude ./venv,./tests
+   ```
+4. Guarda los resultados como `ESTADO_INICIAL_SEGURIDAD.txt` para comparar al final.
+
+---
+
+## MÓDULO 1 — FORTALEZA DE AUTENTICACIÓN
+
+### 1.1 Política de Contraseñas de Nivel Empresarial
+
+Implementa en el endpoint `/register` una validación estricta:
+
+```python
+import re
+from dataclasses import dataclass
+
+@dataclass
+class PasswordPolicy:
+    min_length: int = 12
+    require_uppercase: bool = True
+    require_lowercase: bool = True
+    require_digits: bool = True
+    require_special: bool = True
+    special_chars: str = "!@#$%^&*()_+-=[]{}|;:,.<>?"
+    max_length: int = 128  # Previene DoS por bcrypt con contraseñas enormes
+
+def validate_password(password: str) -> tuple[bool, list[str]]:
+    """Valida la contraseña contra la política empresarial. Devuelve (válida, errores)."""
+    policy = PasswordPolicy()
+    errors = []
+
+    if len(password) < policy.min_length:
+        errors.append(f"Mínimo {policy.min_length} caracteres.")
+    if len(password) > policy.max_length:
+        errors.append(f"Máximo {policy.max_length} caracteres.")
+    if policy.require_uppercase and not re.search(r'[A-Z]', password):
+        errors.append("Debe contener al menos una mayúscula.")
+    if policy.require_lowercase and not re.search(r'[a-z]', password):
+        errors.append("Debe contener al menos una minúscula.")
+    if policy.require_digits and not re.search(r'\d', password):
+        errors.append("Debe contener al menos un número.")
+    if policy.require_special and not any(c in policy.special_chars for c in password):
+        errors.append("Debe contener al menos un carácter especial.")
+
+    # Comprueba contraseñas comunes (lista mínima hardcodeada, ampliar con archivo)
+    COMMON_PASSWORDS = {"password123", "admin1234", "qwerty123", "12345678901 2"}
+    if password.lower() in COMMON_PASSWORDS:
+        errors.append("Contraseña demasiado común. Elige una más única.")
+
+    return len(errors) == 0, errors
+```
+
+### 1.2 bcrypt con Work Factor Adaptativo
+
+```python
+import bcrypt
+import time
+
+def get_optimal_bcrypt_rounds(target_ms: int = 250) -> int:
+    """Calcula el número de rounds de bcrypt para que el hash tarde ~target_ms ms."""
+    rounds = 10
+    while rounds <= 15:
+        start = time.time()
+        bcrypt.hashpw(b"benchmark_password", bcrypt.gensalt(rounds=rounds))
+        elapsed_ms = (time.time() - start) * 1000
+        if elapsed_ms >= target_ms:
+            return rounds
+        rounds += 1
+    return 12  # Fallback seguro
+
+# En producción usa mínimo 12 rounds. Nunca menos.
+BCRYPT_ROUNDS = int(os.environ.get('BCRYPT_ROUNDS', get_optimal_bcrypt_rounds()))
+```
+
+### 1.3 Protección Anti-Timing Attack en Login
+
+```python
+import hmac
+
+def verify_password_safe(plain: str, hashed: bytes) -> bool:
+    """
+    Verificación de contraseña resistente a timing attacks.
+    bcrypt.checkpw ya es resistente, pero añadimos una capa extra con hmac.compare_digest
+    para la comparación del resultado booleano.
+    """
+    try:
+        result = bcrypt.checkpw(plain.encode('utf-8'), hashed)
+        # Comparación de tiempo constante del booleano
+        return hmac.compare_digest(str(result).encode(), b'True')
+    except Exception:
+        return False
+```
+
+### 1.4 Implementar TOTP (2FA) Opcional
+
+```python
+# Instalar: pip install pyotp qrcode[pil]
+import pyotp
+import qrcode
+import io, base64
+
+def generate_totp_secret(user_id: int) -> str:
+    """Genera un secreto TOTP único para el usuario."""
+    return pyotp.random_base32()
+
+def verify_totp(secret: str, token: str) -> bool:
+    """Verifica un código TOTP con una ventana de tiempo de ±1 intervalo."""
+    totp = pyotp.TOTP(secret)
+    return totp.verify(token, valid_window=1)
+
+def get_totp_qr_base64(secret: str, user_email: str, app_name: str = "NotasPrivadas") -> str:
+    """Genera un QR code en base64 para configurar apps autenticadoras."""
+    uri = pyotp.totp.TOTP(secret).provisioning_uri(name=user_email, issuer_name=app_name)
+    qr = qrcode.make(uri)
+    buffer = io.BytesIO()
+    qr.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode()
+```
+
+---
+
+## MÓDULO 2 — BLINDAJE JWT DE NIVEL MILITAR
+
+### 2.1 Sistema de Tokens Dual (Access + Refresh)
+
+```python
+import jwt
+import uuid
+from datetime import datetime, timezone, timedelta
+from typing import Optional
+
+# NUNCA uses HS256 sin validación explícita del algoritmo
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 15   # Muy corto — minimiza ventana de ataque
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+def create_access_token(user_id: int, user_email: str) -> str:
+    """Crea un JWT de acceso de corta duración con claims de seguridad completos."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        # Claims estándar RFC 7519
+        "sub": str(user_id),                          # Subject
+        "iat": now,                                    # Issued At
+        "exp": now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),  # Expiration
+        "nbf": now,                                    # Not Before
+        "jti": str(uuid.uuid4()),                      # JWT ID único (para blacklist)
+        # Claims personalizados
+        "email": user_email,
+        "type": "access",
+        "ver": "1",                                    # Versión de token para rotación de esquema
+    }
+    return jwt.encode(payload, os.environ['JWT_SECRET'], algorithm=JWT_ALGORITHM)
+
+def create_refresh_token(user_id: int) -> str:
+    """Crea un token de refresco opaco de larga duración."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(user_id),
+        "iat": now,
+        "exp": now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        "jti": str(uuid.uuid4()),
+        "type": "refresh",
+    }
+    return jwt.encode(payload, os.environ['JWT_SECRET'], algorithm=JWT_ALGORITHM)
+
+def decode_token_secure(token: str, expected_type: str = "access") -> Optional[dict]:
+    """
+    Decodificación segura de JWT con validación explícita de algoritmo.
+    Previene: alg:none attack, algorithm confusion attack (RS256 → HS256).
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            os.environ['JWT_SECRET'],
+            algorithms=[JWT_ALGORITHM],          # Lista blanca explícita — CRÍTICO
+            options={
+                "require": ["exp", "iat", "sub", "jti", "type"],  # Claims obligatorios
+                "verify_exp": True,
+                "verify_iat": True,
+                "verify_nbf": True,
+            }
+        )
+        # Verificación adicional del tipo de token
+        if payload.get("type") != expected_type:
+            return None
+        # Verificar que el JTI no está en la blacklist
+        if is_token_blacklisted(payload["jti"]):
+            return None
+        return payload
+    except jwt.ExpiredSignatureError:
+        return None   # Token expirado — respuesta genérica
+    except jwt.InvalidTokenError:
+        return None   # Cualquier token inválido — respuesta genérica
+```
+
+### 2.2 Blacklist de Tokens con TTL Automático
+
+```python
+# Usa Redis si está disponible, SQLite como fallback
+import redis
+from functools import lru_cache
+
+@lru_cache(maxsize=1)
+def get_redis_client():
+    try:
+        r = redis.Redis(
+            host=os.environ.get('REDIS_HOST', 'localhost'),
+            port=int(os.environ.get('REDIS_PORT', 6379)),
+            db=0,
+            socket_connect_timeout=2
+        )
+        r.ping()
+        return r
+    except Exception:
+        return None  # Fallback a SQLite
+
+def blacklist_token(jti: str, expire_seconds: int) -> None:
+    """Añade un JTI a la blacklist con TTL igual a la expiración del token."""
+    r = get_redis_client()
+    if r:
+        r.setex(f"blacklist:{jti}", expire_seconds, "1")
+    else:
+        # Fallback: tabla SQLite token_blacklist(jti, expires_at)
+        db.execute(
+            "INSERT OR IGNORE INTO token_blacklist (jti, expires_at) VALUES (?, ?)",
+            (jti, datetime.now(timezone.utc) + timedelta(seconds=expire_seconds))
+        )
+
+def is_token_blacklisted(jti: str) -> bool:
+    """Comprueba si un JTI está revocado."""
+    r = get_redis_client()
+    if r:
+        return r.exists(f"blacklist:{jti}") > 0
+    else:
+        result = db.execute(
+            "SELECT 1 FROM token_blacklist WHERE jti = ? AND expires_at > ?",
+            (jti, datetime.now(timezone.utc))
+        ).fetchone()
+        return result is not None
+```
+
+### 2.3 Rotación Automática de Secretos JWT
+
+Añadir al `.env.example`:
+```env
+JWT_SECRET=<genera con: openssl rand -hex 64>
+JWT_SECRET_PREVIOUS=<secreto anterior para período de gracia de 24h>
+JWT_SECRET_ROTATION_DATE=<fecha ISO de última rotación>
+```
+
+---
+
+## MÓDULO 3 — AUTORIZACIÓN ZERO TRUST
+
+### 3.1 Decorador de Seguridad Multicapa
+
+```python
+from functools import wraps
+from flask import request, g, abort
+import logging
+
+security_logger = logging.getLogger('security')
+
+def require_auth(f):
+    """
+    Decorador de autenticación que:
+    1. Extrae y valida el JWT del header Authorization.
+    2. Verifica que el token no está en la blacklist.
+    3. Carga el usuario en el contexto global `g`.
+    4. Registra el acceso en el log de seguridad.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            security_logger.warning(
+                "AUTH_MISSING | IP=%s | Path=%s", get_client_ip(), request.path
+            )
+            abort(401, description="Token de autenticación requerido.")
+
+        token = auth_header[7:]  # Elimina "Bearer "
+        payload = decode_token_secure(token, expected_type="access")
+
+        if not payload:
+            security_logger.warning(
+                "AUTH_INVALID | IP=%s | Path=%s", get_client_ip(), request.path
+            )
+            abort(401, description="Token inválido o expirado.")
+
+        g.user_id = int(payload["sub"])
+        g.jti = payload["jti"]
+        return f(*args, **kwargs)
+    return decorated
+
+def require_note_ownership(f):
+    """
+    Decorador anti-IDOR: verifica que la nota pertenece al usuario autenticado.
+    Úsalo siempre junto a @require_auth en rutas con <note_id>.
+    """
+    @wraps(f)
+    def decorated(*args, note_id: int, **kwargs):
+        note = db.execute(
+            "SELECT user_id FROM notes WHERE id = ?", (note_id,)
+        ).fetchone()
+
+        if not note:
+            abort(404)  # Existencia de la nota es información — no revelar si es 401 o 404
+
+        if note['user_id'] != g.user_id:
+            security_logger.critical(
+                "IDOR_ATTEMPT | user_id=%s | note_id=%s | IP=%s",
+                g.user_id, note_id, get_client_ip()
+            )
+            abort(404)  # Devuelve 404, no 403 — no confirma existencia del recurso
+
+        return f(*args, note_id=note_id, **kwargs)
+    return decorated
+
+def get_client_ip() -> str:
+    """Obtiene la IP real del cliente respetando proxies de confianza."""
+    if request.headers.get('X-Forwarded-For'):
+        # Solo confiar en la primera IP (cliente original)
+        return request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    return request.remote_addr or 'unknown'
+```
+
+### 3.2 Uso en Rutas
+
+```python
+@app.route('/api/notes/<int:note_id>', methods=['GET', 'PUT', 'DELETE'])
+@require_auth
+@require_note_ownership
+def note_detail(note_id: int):
+    # En este punto GARANTIZAMOS que:
+    # ✅ El usuario está autenticado (JWT válido y no revocado)
+    # ✅ La nota existe y le pertenece al usuario autenticado
+    pass
+```
+
+---
+
+## MÓDULO 4 — DEFENSA ANTI-INYECCIÓN TOTAL
+
+### 4.1 ORM Obligatorio — Cero SQL Manual
+
+Migrar cualquier query SQL cruda a SQLAlchemy ORM:
+
+```python
+# ❌ NUNCA — Vulnerable a SQL Injection
+query = f"SELECT * FROM notes WHERE title LIKE '%{search_term}%'"
+
+# ✅ SIEMPRE — Parámetros escapados automáticamente por SQLAlchemy
+notes = Note.query.filter(
+    Note.user_id == g.user_id,
+    Note.title.ilike(f"%{search_term}%")  # ilike ya escapa correctamente
+).all()
+```
+
+### 4.2 Sanitización de Entradas con bleach
+
+```python
+# pip install bleach
+import bleach
+
+# Configuración estricta: solo texto plano, sin HTML
+ALLOWED_TAGS = []          # Sin tags HTML en títulos
+ALLOWED_ATTRS = {}
+
+# Para contenido que permita formato básico (opcional):
+ALLOWED_TAGS_CONTENT = ['b', 'i', 'u', 'em', 'strong', 'p', 'br', 'ul', 'ol', 'li']
+
+def sanitize_text(value: str, allow_basic_html: bool = False) -> str:
+    """Sanitiza texto eliminando HTML peligroso."""
+    if not isinstance(value, str):
+        raise ValueError("Se esperaba una cadena de texto.")
+    tags = ALLOWED_TAGS_CONTENT if allow_basic_html else ALLOWED_TAGS
+    return bleach.clean(value.strip(), tags=tags, attributes=ALLOWED_ATTRS)
+
+def validate_and_sanitize_note(data: dict) -> tuple[dict, list[str]]:
+    """Valida y sanitiza los datos de una nota. Devuelve (datos_limpios, errores)."""
+    errors = []
+    clean = {}
+
+    title = data.get('title', '')
+    content = data.get('content', '')
+
+    if not title or len(title.strip()) == 0:
+        errors.append("El título es obligatorio.")
+    elif len(title) > 200:
+        errors.append("El título no puede superar 200 caracteres.")
+    else:
+        clean['title'] = sanitize_text(title)
+
+    if len(content) > 50_000:
+        errors.append("El contenido no puede superar 50.000 caracteres.")
+    else:
+        clean['content'] = sanitize_text(content, allow_basic_html=False)
+
+    return clean, errors
+```
+
+---
+
+## MÓDULO 5 — CABECERAS HTTP FORTRESS
+
+```python
+# pip install flask-talisman
+from flask_talisman import Talisman
+
+# Content Security Policy de máxima seguridad
+csp = {
+    'default-src': ["'self'"],
+    'script-src': ["'self'"],          # Sin inline scripts, sin CDN externos
+    'style-src': ["'self'", "'unsafe-inline'"],  # Permite estilos inline de Bootstrap
+    'img-src': ["'self'", "data:"],
+    'font-src': ["'self'"],
+    'connect-src': ["'self'"],
+    'frame-ancestors': ["'none'"],     # Previene clickjacking
+    'base-uri': ["'self'"],
+    'form-action': ["'self'"],
+    'object-src': ["'none'"],
+    'upgrade-insecure-requests': True,
+}
+
+Talisman(
+    app,
+    force_https=True,                           # Redirige HTTP → HTTPS
+    strict_transport_security=True,
+    strict_transport_security_max_age=31536000, # 1 año de HSTS
+    strict_transport_security_include_subdomains=True,
+    strict_transport_security_preload=True,
+    content_security_policy=csp,
+    referrer_policy='strict-origin-when-cross-origin',
+    feature_policy={
+        'geolocation': "'none'",
+        'camera': "'none'",
+        'microphone': "'none'",
+    },
+    x_content_type_options=True,               # Previene MIME sniffing
+    x_xss_protection=False,                    # Desactivar — moderno CSP es mejor
+    x_frame_options='DENY',                    # Anti-clickjacking
+)
+
+# Cabecera adicional manual: eliminar información del servidor
+@app.after_request
+def remove_server_header(response):
+    response.headers.pop('Server', None)
+    response.headers.pop('X-Powered-By', None)
+    response.headers['Cache-Control'] = 'no-store, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    return response
+```
+
+---
+
+## MÓDULO 6 — RATE LIMITING Y ANTI-FUERZA BRUTA
+
+```python
+# pip install flask-limiter
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+import time
+from collections import defaultdict
+import threading
+
+limiter = Limiter(
+    app=app,
+    key_func=get_client_ip,               # Usa la IP real (respeta X-Forwarded-For)
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri=os.environ.get('REDIS_URL', 'memory://'),  # Redis en producción
+    headers_enabled=True,                  # Expone RateLimit-* headers
+)
+
+# Rutas con límites específicos
+@app.route('/api/auth/login', methods=['POST'])
+@limiter.limit("5 per minute; 20 per hour")
+def login():
+    pass
+
+@app.route('/api/auth/register', methods=['POST'])
+@limiter.limit("3 per hour")
+def register():
+    pass
+
+# Bloqueo progresivo por IP con backoff exponencial
+_login_attempts = defaultdict(list)
+_lock = threading.Lock()
+
+def check_progressive_lockout(ip: str) -> tuple[bool, int]:
+    """
+    Implementa bloqueo progresivo: 5 intentos → 30s, 10 → 5min, 20 → 1h.
+    Devuelve (bloqueado, segundos_restantes).
+    """
+    now = time.time()
+    with _lock:
+        # Limpiar intentos antiguos (ventana de 1 hora)
+        _login_attempts[ip] = [t for t in _login_attempts[ip] if now - t < 3600]
+        attempts = len(_login_attempts[ip])
+
+    if attempts >= 20:
+        wait = 3600
+    elif attempts >= 10:
+        wait = 300
+    elif attempts >= 5:
+        wait = 30
+    else:
+        return False, 0
+
+    last_attempt = _login_attempts[ip][-1] if _login_attempts[ip] else 0
+    remaining = int(wait - (now - last_attempt))
+    if remaining > 0:
+        return True, remaining
+    return False, 0
+
+# Manejador de error 429
+@app.errorhandler(429)
+def rate_limit_exceeded(e):
+    security_logger.warning("RATE_LIMIT | IP=%s | Path=%s", get_client_ip(), request.path)
+    return {"error": "Demasiadas peticiones. Inténtalo más tarde."}, 429
+```
+
+---
+
+## MÓDULO 7 — CIFRADO EN REPOSO
+
+### 7.1 Cifrado del Contenido de las Notas
+
+```python
+# pip install cryptography
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import base64, os
+
+def derive_encryption_key(master_key: str, salt: bytes) -> bytes:
+    """Deriva una clave de cifrado única por usuario a partir de la clave maestra."""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=480_000,  # OWASP 2023 mínimo para SHA-256
+    )
+    return base64.urlsafe_b64encode(kdf.derive(master_key.encode()))
+
+def encrypt_content(plaintext: str, user_salt: bytes) -> str:
+    """Cifra el contenido de una nota con AES-128 via Fernet."""
+    key = derive_encryption_key(os.environ['ENCRYPTION_MASTER_KEY'], user_salt)
+    f = Fernet(key)
+    return f.encrypt(plaintext.encode('utf-8')).decode('utf-8')
+
+def decrypt_content(ciphertext: str, user_salt: bytes) -> str:
+    """Descifra el contenido de una nota."""
+    key = derive_encryption_key(os.environ['ENCRYPTION_MASTER_KEY'], user_salt)
+    f = Fernet(key)
+    return f.decrypt(ciphertext.encode('utf-8')).decode('utf-8')
+```
+
+Añadir al `.env.example`:
+```env
+ENCRYPTION_MASTER_KEY=<genera con: python -c "import secrets; print(secrets.token_hex(32))">
+```
+
+---
+
+## MÓDULO 8 — ENDURECIMIENTO DE CONTENEDORES DOCKER
+
+### 8.1 Dockerfile Hardened
+
+```dockerfile
+# ---- Stage 1: Builder ----
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# ---- Stage 2: Runtime (superficie mínima) ----
+FROM python:3.11-slim AS runtime
+
+# Metadatos de seguridad
+LABEL maintainer="tu@email.com"
+LABEL org.opencontainers.image.description="Gestor de Notas Privadas - Hardened"
+
+# Crear usuario no-root con UID/GID fijo (no usar UID < 1000)
+RUN groupadd --gid 1001 appgroup && \
+    useradd --uid 1001 --gid 1001 --no-create-home --shell /bin/false appuser
+
+WORKDIR /app
+
+# Copiar solo dependencias instaladas del builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --chown=appuser:appgroup . .
+
+# Permisos restrictivos
+RUN chmod -R 550 /app && \
+    chmod -R 770 /app/instance  # Solo el directorio de BD necesita escritura
+
+# Variables de seguridad del runtime de Python
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONFAULTHANDLER=0 \
+    PYTHONHASHSEED=random
+
+# Eliminar herramientas innecesarias
+RUN apt-get purge -y --auto-remove curl wget && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+USER appuser
+
+EXPOSE 5000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')" || exit 1
+
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "2", \
+     "--timeout", "30", "--max-requests", "1000", "--max-requests-jitter", "50", \
+     "--access-logfile", "-", "--error-logfile", "-", \
+     "app:app"]
+```
+
+### 8.2 docker-compose.yml Hardened
+
+```yaml
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:5000:5000"    # Solo escuchar en localhost — Nginx hace el proxy
+    volumes:
+      - app_data:/app/instance    # Volumen nombrado, no bind mount
+    networks:
+      - internal
+    security_opt:
+      - no-new-privileges:true    # Previene escalada de privilegios
+    read_only: true               # Filesystem de solo lectura
+    tmpfs:
+      - /tmp:size=50m,mode=1777   # /tmp en memoria, tamaño limitado
+    cap_drop:
+      - ALL                       # Eliminar todas las capabilities Linux
+    cap_add:
+      - NET_BIND_SERVICE          # Solo la necesaria para binding de puertos
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 50
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 2048
+
+  nginx:
+    image: nginx:1.25-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    networks:
+      - internal
+      - external
+    depends_on:
+      - app
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  app_data:
+    driver: local
+  nginx_logs:
+    driver: local
+
+networks:
+  internal:
+    driver: bridge
+    internal: true       # Sin acceso a internet directo desde el contenedor de app
+  external:
+    driver: bridge
+```
+
+---
+
+## MÓDULO 9 — WAF LIGERO (WEB APPLICATION FIREWALL)
+
+```python
+import re
+from flask import request, abort
+
+# Patrones de ataque conocidos
+ATTACK_PATTERNS = [
+    # SQL Injection
+    re.compile(r"(\bUNION\b|\bSELECT\b|\bDROP\b|\bINSERT\b|\bDELETE\b|\bUPDATE\b)", re.IGNORECASE),
+    # XSS básico
+    re.compile(r"<script[\s\S]*?>|javascript\s*:|on\w+\s*=", re.IGNORECASE),
+    # Path Traversal
+    re.compile(r"\.\./|\.\.\\|%2e%2e%2f|%2e%2e/", re.IGNORECASE),
+    # Command Injection
+    re.compile(r"[;&|`$]|\$\(|`.*`"),
+    # LDAP Injection
+    re.compile(r"[)(|&*!\\]"),
+]
+
+MAX_REQUEST_SIZE = 1 * 1024 * 1024  # 1 MB
+
+@app.before_request
+def waf_middleware():
+    """WAF ligero que inspecciona todas las peticiones entrantes."""
+
+    # 1. Limite de tamaño de petición
+    content_length = request.content_length
+    if content_length and content_length > MAX_REQUEST_SIZE:
+        security_logger.warning("WAF_SIZE | IP=%s | size=%s", get_client_ip(), content_length)
+        abort(413, description="Petición demasiado grande.")
+
+    # 2. Validar Content-Type para peticiones con body
+    if request.method in ['POST', 'PUT', 'PATCH']:
+        ct = request.content_type or ''
+        if not ct.startswith('application/json'):
+            abort(415, description="Content-Type debe ser application/json.")
+
+    # 3. Inspección de parámetros y body contra patrones de ataque
+    # (Solo como capa adicional — el ORM y bleach son la defensa principal)
+    inputs_to_check = []
+    inputs_to_check.extend(request.args.values())
+    inputs_to_check.extend(request.form.values())
+    if request.is_json:
+        inputs_to_check.extend(str(v) for v in (request.json or {}).values())
+
+    for value in inputs_to_check:
+        for pattern in ATTACK_PATTERNS:
+            if pattern.search(str(value)):
+                security_logger.critical(
+                    "WAF_BLOCK | IP=%s | Pattern=%s | Path=%s",
+                    get_client_ip(), pattern.pattern[:50], request.path
+                )
+                abort(400, description="Petición bloqueada.")
+```
+
+---
+
+## MÓDULO 10 — LOGGING DE SEGURIDAD Y DETECCIÓN DE INTRUSIONES
+
+```python
+import logging
+import logging.handlers
+import json
+from datetime import datetime, timezone
+
+class SecurityJSONFormatter(logging.Formatter):
+    """Formateador de logs en JSON estructurado para SIEM."""
+    def format(self, record):
+        log_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "event": record.getMessage(),
+            "logger": record.name,
+            "module": record.module,
+            "line": record.lineno,
+        }
+        return json.dumps(log_entry, ensure_ascii=False)
+
+def setup_security_logging(app):
+    """Configura logging de seguridad estructurado con rotación de archivos."""
+
+    # Logger de seguridad dedicado (separado del logger de aplicación)
+    security_handler = logging.handlers.RotatingFileHandler(
+        'logs/security.log',
+        maxBytes=10 * 1024 * 1024,  # 10MB por archivo
+        backupCount=30,              # Mantener 30 días de logs
+        encoding='utf-8'
+    )
+    security_handler.setFormatter(SecurityJSONFormatter())
+    security_handler.setLevel(logging.INFO)
+
+    security_logger = logging.getLogger('security')
+    security_logger.setLevel(logging.INFO)
+    security_logger.addHandler(security_handler)
+    security_logger.propagate = False  # No propagar al logger raíz
+
+    # Eventos de seguridad a registrar (ejemplos de uso):
+    # security_logger.info("AUTH_SUCCESS | user_id=%s | IP=%s", user_id, ip)
+    # security_logger.warning("AUTH_FAIL | email=%s | IP=%s", email, ip)  ← SIN contraseña
+    # security_logger.critical("IDOR_ATTEMPT | ...")
+
+# Detección de anomalías básica
+def detect_anomaly(event_type: str, ip: str):
+    """Detecta patrones sospechosos y activa alertas."""
+    THRESHOLDS = {
+        "AUTH_FAIL": (10, 300),       # 10 fallos en 5 minutos → alerta
+        "IDOR_ATTEMPT": (1, 60),      # Cualquier IDOR → alerta inmediata
+        "WAF_BLOCK": (5, 60),         # 5 bloqueos WAF en 1 minuto → alerta
+    }
+    # Implementar con Redis para conteo en tiempo real
+    # Enviar alerta por email/webhook si se supera el umbral
+    pass
+```
+
+---
+
+## MÓDULO 11 — GESTIÓN SEGURA DE SECRETOS
+
+### 11.1 Validación de Variables de Entorno al Arranque
+
+```python
+import sys
+
+REQUIRED_ENV_VARS = {
+    'JWT_SECRET': {
+        'min_length': 64,
+        'description': 'Secreto JWT (genera con: openssl rand -hex 64)'
+    },
+    'ENCRYPTION_MASTER_KEY': {
+        'min_length': 32,
+        'description': 'Clave de cifrado de notas'
+    },
+    'DATABASE_URL': {
+        'min_length': 10,
+        'description': 'URL de conexión a la base de datos'
+    },
+}
+
+def validate_environment():
+    """Valida todas las variables de entorno requeridas al arranque. Falla rápido."""
+    errors = []
+    for var, config in REQUIRED_ENV_VARS.items():
+        value = os.environ.get(var, '')
+        if not value:
+            errors.append(f"[CRÍTICO] Variable de entorno '{var}' no definida. {config['description']}")
+        elif len(value) < config['min_length']:
+            errors.append(
+                f"[CRÍTICO] '{var}' demasiado corta ({len(value)} chars). "
+                f"Mínimo: {config['min_length']} chars."
+            )
+
+    # Detectar secretos débiles conocidos
+    WEAK_SECRETS = {'secret', 'password', 'changeme', 'test', '12345', 'dev'}
+    jwt_secret = os.environ.get('JWT_SECRET', '').lower()
+    if any(weak in jwt_secret for weak in WEAK_SECRETS):
+        errors.append("[CRÍTICO] JWT_SECRET contiene un valor débil o de ejemplo.")
+
+    if errors:
+        for error in errors:
+            print(f"ERROR DE CONFIGURACIÓN: {error}", file=sys.stderr)
+        sys.exit(1)  # Falla rápido — nunca arrancar con config insegura
+
+# Llamar en el inicio de app.py ANTES de cualquier otra inicialización
+validate_environment()
+```
+
+---
+
+## MÓDULO 12 — SUPERFICIE DE ATAQUE MÍNIMA
+
+```python
+# 1. Eliminar rutas de debug/desarrollo
+# Buscar y eliminar cualquier:
+# @app.route('/debug'), @app.route('/test'), @app.route('/admin') sin protección
+
+# 2. Health check seguro (sin información sensible)
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check mínimo que no expone información del sistema."""
+    return {"status": "ok"}, 200
+    # NUNCA: {"status": "ok", "version": "1.0", "db": "connected", "uptime": ...}
+
+# 3. Manejadores de error genéricos (sin stack traces)
+@app.errorhandler(400)
+@app.errorhandler(401)
+@app.errorhandler(403)
+@app.errorhandler(404)
+@app.errorhandler(405)
+@app.errorhandler(413)
+@app.errorhandler(429)
+@app.errorhandler(500)
+def generic_error_handler(e):
+    """Manejador genérico que nunca expone información interna."""
+    code = getattr(e, 'code', 500)
+    # Loguear el error completo internamente
+    if code == 500:
+        app.logger.error("INTERNAL_ERROR | %s | IP=%s", str(e), get_client_ip())
+    return {"error": getattr(e, 'description', 'Error en el servidor.')}, code
+
+# 4. Configuración de Flask para producción
+app.config.update(
+    DEBUG=False,                            # NUNCA True en producción
+    TESTING=False,
+    PROPAGATE_EXCEPTIONS=False,
+    TRAP_HTTP_EXCEPTIONS=False,
+    MAX_CONTENT_LENGTH=1 * 1024 * 1024,    # 1MB máximo
+    JSON_SORT_KEYS=False,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_SAMESITE='Strict',
+    PERMANENT_SESSION_LIFETIME=timedelta(minutes=15),
+    WTF_CSRF_ENABLED=True,                 # Si usas Flask-WTF
+)
+```
+
+---
+
+## MÓDULO 13 — TESTS DE PENETRACIÓN AUTOMATIZADOS
+
+Crear el archivo `tests/test_security.py`:
+
+```python
+import pytest
+import jwt
+import json
+
+class TestAuthSecurity:
+    def test_login_returns_generic_error_for_invalid_credentials(self, client):
+        """No debe revelar si el email existe o si la contraseña es incorrecta."""
+        r1 = client.post('/api/auth/login', json={"email": "noexiste@test.com", "password": "mal"})
+        r2 = client.post('/api/auth/login', json={"email": "existe@test.com", "password": "mal"})
+        # Ambas respuestas deben ser idénticas (timing también, idealmente)
+        assert r1.status_code == r2.status_code == 401
+        assert r1.json == r2.json
+
+    def test_jwt_algorithm_none_attack(self, client, valid_user):
+        """El servidor debe rechazar tokens con alg: none."""
+        # Crear token con alg: none manualmente
+        header = {"alg": "none", "typ": "JWT"}
+        payload = {"sub": str(valid_user.id), "type": "access", "exp": 9999999999}
+        import base64
+        none_token = (
+            base64.urlsafe_b64encode(json.dumps(header).encode()).rstrip(b'=') + b'.' +
+            base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b'=') + b'.'
+        ).decode()
+        r = client.get('/api/notes', headers={"Authorization": f"Bearer {none_token}"})
+        assert r.status_code == 401
+
+    def test_idor_protection(self, client, user_a_token, user_b_note):
+        """El usuario A no debe poder acceder a las notas del usuario B."""
+        r = client.get(
+            f'/api/notes/{user_b_note.id}',
+            headers={"Authorization": f"Bearer {user_a_token}"}
+        )
+        assert r.status_code in [403, 404]  # Nunca 200
+
+    def test_sql_injection_in_search(self, client, auth_token):
+        """La búsqueda debe ser inmune a SQL injection."""
+        payloads = ["' OR '1'='1", "1; DROP TABLE notes--", "' UNION SELECT * FROM users--"]
+        for payload in payloads:
+            r = client.get(
+                f'/api/notes?search={payload}',
+                headers={"Authorization": f"Bearer {auth_token}"}
+            )
+            assert r.status_code in [200, 400], f"Payload peligroso no manejado: {payload}"
+
+    def test_xss_sanitization_in_notes(self, client, auth_token):
+        """El contenido XSS debe ser sanitizado al guardar."""
+        xss_payloads = [
+            "<script>alert('xss')</script>",
+            "<img src=x onerror=alert(1)>",
+            "javascript:alert(1)",
+        ]
+        for payload in xss_payloads:
+            r = client.post(
+                '/api/notes',
+                json={"title": payload, "content": "test"},
+                headers={"Authorization": f"Bearer {auth_token}"}
+            )
+            if r.status_code == 201:
+                note_id = r.json['id']
+                note = client.get(f'/api/notes/{note_id}', headers={"Authorization": f"Bearer {auth_token}"})
+                assert '<script>' not in note.json.get('title', '')
+
+    def test_rate_limiting_on_login(self, client):
+        """El endpoint de login debe aplicar rate limiting."""
+        for i in range(10):
+            r = client.post('/api/auth/login', json={"email": "test@test.com", "password": "wrong"})
+        assert r.status_code == 429
+
+    def test_security_headers_present(self, client):
+        """Todas las cabeceras de seguridad requeridas deben estar presentes."""
+        r = client.get('/health')
+        headers = r.headers
+        assert 'X-Content-Type-Options' in headers
+        assert 'X-Frame-Options' in headers
+        assert 'Content-Security-Policy' in headers
+        assert 'Strict-Transport-Security' in headers
+        assert 'Server' not in headers  # No revelar versión del servidor
+
+    def test_expired_token_rejected(self, client, valid_user):
+        """Los tokens expirados deben ser rechazados."""
+        expired_token = jwt.encode(
+            {"sub": str(valid_user.id), "exp": 1, "iat": 1, "type": "access", "jti": "test"},
+            os.environ['JWT_SECRET'], algorithm="HS256"
+        )
+        r = client.get('/api/notes', headers={"Authorization": f"Bearer {expired_token}"})
+        assert r.status_code == 401
+
+    def test_password_policy_enforcement(self, client):
+        """El registro debe rechazar contraseñas débiles."""
+        weak_passwords = ["123456", "password", "abc", "12345678"]
+        for pwd in weak_passwords:
+            r = client.post('/api/auth/register', json={"email": "new@test.com", "password": pwd})
+            assert r.status_code == 400, f"Contraseña débil aceptada: {pwd}"
+```
+
+---
+
+## MÓDULO 14 — PIPELINE CI/CD DE SEGURIDAD
+
+Crear `.github/workflows/security.yml`:
+
+```yaml
+name: Security Pipeline
+
+on: [push, pull_request]
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install security tools
+        run: pip install bandit pip-audit safety pytest
+
+      - name: Static analysis (Bandit)
+        run: bandit -r backend/ -ll -ii --exclude backend/venv,backend/tests -f json -o bandit-report.json
+        continue-on-error: false
+
+      - name: Dependency vulnerability scan (pip-audit)
+        run: pip-audit -r backend/requirements.txt --format json -o pip-audit-report.json
+
+      - name: Run security tests
+        run: cd backend && pytest tests/test_security.py -v --tb=short
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET_TEST }}
+          ENCRYPTION_MASTER_KEY: ${{ secrets.ENCRYPTION_KEY_TEST }}
+
+      - name: Check for secrets in code (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            pip-audit-report.json
+```
+
+---
+
+## EJECUCIÓN COMPLETA DEL AGENTE
+
+Implementa los módulos en este orden exacto:
+
+```
+ORDEN DE IMPLEMENTACIÓN
+════════════════════════════════════════
+ 1. MÓDULO 11 → Validación de entorno (si falla, todo falla — hacer primero)
+ 2. MÓDULO 2  → JWT seguro (máximo impacto en seguridad)
+ 3. MÓDULO 3  → Zero Trust / Anti-IDOR
+ 4. MÓDULO 4  → Anti-inyección
+ 5. MÓDULO 1  → Autenticación robusta
+ 6. MÓDULO 6  → Rate limiting
+ 7. MÓDULO 5  → Cabeceras HTTP
+ 8. MÓDULO 9  → WAF ligero
+ 9. MÓDULO 10 → Logging de seguridad
+10. MÓDULO 7  → Cifrado en reposo
+11. MÓDULO 12 → Superficie mínima
+12. MÓDULO 8  → Docker hardening
+13. MÓDULO 13 → Tests de penetración
+14. MÓDULO 14 → Pipeline CI/CD
+════════════════════════════════════════
+```
+
+Tras completar todos los módulos:
+
+1. Ejecutar la suite de tests completa: `pytest tests/ -v`
+2. Ejecutar análisis estático final: `bandit -r . -ll -ii --exclude ./venv,./tests`
+3. Ejecutar audit de dependencias: `pip-audit`
+4. Generar el reporte final de blindaje: `SECURITY_HARDENING_COMPLETE.md`
+
+El reporte final debe incluir:
+- Lista de todos los módulos implementados con estado ✅/❌
+- Comparación del estado inicial vs final (resultado de bandit y pip-audit)
+- Checklist de producción lista para deploy
+- Instrucciones de mantenimiento y rotación de secretos
